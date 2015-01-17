@@ -5,13 +5,12 @@ more documentation and example at: https://github.com/sunfmin/fanout
 package fanout
 
 import (
-	"errors"
 	"sync"
 )
 
 // feedInputs starts a goroutine to loop through inputs and send the
-// input on the interface{} channel. If done is closed, feedInputs abandons its work.
-func feedInputs(done <-chan int, inputs []interface{}) (<-chan interface{}, <-chan error) {
+// input on the interface{} channel.
+func feedInputs(inputs []interface{}) (<-chan interface{}, <-chan error) {
 	inputsChan := make(chan interface{})
 	errChan := make(chan error, 1)
 
@@ -22,12 +21,7 @@ func feedInputs(done <-chan int, inputs []interface{}) (<-chan interface{}, <-ch
 		// No select needed for this send, since errc is buffered.
 		errChan <- func() error {
 			for _, input := range inputs {
-				select {
-				case inputsChan <- input:
-				case <-done:
-					// fmt.Println("feedInput Done")
-					return errors.New("loop canceled")
-				}
+				inputsChan <- input
 			}
 			return nil
 		}()
@@ -40,17 +34,12 @@ type resultWithError struct {
 	err    error
 }
 
-func work(done <-chan int, inputs <-chan interface{}, c chan<- resultWithError, w Worker) {
+func work(inputs <-chan interface{}, c chan<- resultWithError, w Worker) {
 	for input := range inputs {
 		// fmt.Println("Got ", input, " in worker")
 		re := resultWithError{}
 		re.result, re.err = w(input)
-		select {
-		case c <- re:
-		case <-done:
-			// fmt.Println("worker done.")
-			return
-		}
+		c <- re
 	}
 }
 
@@ -65,12 +54,7 @@ type Worker func(input interface{}) (interface{}, error)
 // and run the `Worker`, If any worker finish, it will put the result value into a channel, then append to the results value.
 // The func will block the execution and wait for all goroutines to finish, then return results all together.
 func ParallelRun(workerNum int, w Worker, inputs []interface{}) ([]interface{}, error) {
-	// closes the done channel when it returns; it may do so before
-	// receiving all the values from c and errc.
-	done := make(chan int)
-	defer close(done)
-
-	inputsc, errc := feedInputs(done, inputs)
+	inputsc, errc := feedInputs(inputs)
 	// fmt.Printf("errc = %#v, %d\n", errc, len(errc))
 
 	// Start a fixed number of goroutines to do the worker.
@@ -81,7 +65,7 @@ func ParallelRun(workerNum int, w Worker, inputs []interface{}) ([]interface{}, 
 	for i := 0; i < workerNum; i++ {
 		// fmt.Println("starting ", i)
 		go func() {
-			work(done, inputsc, c, w)
+			work(inputsc, c, w)
 			wg.Done()
 		}()
 	}
